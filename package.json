@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "dependencies": {
+    "@sparticuz/chromium-min": "138.0.2",
+    "puppeteer-core": "24.18.0"
+  }
+}
