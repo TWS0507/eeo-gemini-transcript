@@ -7,7 +7,7 @@ const zlib=require('zlib');
 const {pipeline}=require('stream/promises');
 const {Readable}=require('stream');
 
-const MAX_CHUNK=300; // 5 min, safe for Hobby function duration
+const MAX_CHUNK=120; // 2 min, friendlier to Gemini Free Tier rate limits
 const FFMPEG_URL='https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-linux-x64.gz';
 const FFMPEG_PATH=path.join(os.tmpdir(),'ffmpeg-6.1.1-linux-x64');
 let ffmpegReadyPromise=null;
@@ -55,10 +55,10 @@ async function transcribe(file,key){const f=await upload(file,key);try{const r=a
 
 module.exports=async function handler(req,res){
   if(req.method!=='POST')return res.status(405).json({error:'Method not allowed'});
-  const {mediaUrl,referer,apiKey,startSeconds=0,durationSeconds=300,chunkIndex=0}=req.body||{};
+  const {mediaUrl,referer,apiKey,startSeconds=0,durationSeconds=120,chunkIndex=0}=req.body||{};
   if(!safeHttps(mediaUrl)||!safeHttps(referer))return res.status(400).json({error:'媒体地址无效'});
   if(!apiKey)return res.status(400).json({error:'缺少 Gemini API Key'});
-  const dur=Math.min(MAX_CHUNK,Math.max(60,Number(durationSeconds)||300)),start=Math.max(0,Number(startSeconds)||0);
+  const dur=Math.min(MAX_CHUNK,Math.max(60,Number(durationSeconds)||120)),start=Math.max(0,Number(startSeconds)||0);
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'eeo-chunk-'));
   const out=path.join(dir,'audio.mp3');
   try{
@@ -76,7 +76,19 @@ module.exports=async function handler(req,res){
     return res.status(200).json({ok:true,done:false,chunkIndex,startSeconds:start,durationSeconds:dur,text,segments:segs,dominantSpeaker:dominant});
   }catch(e){
     console.error('CHUNK_FAILED',e);
-    return res.status(500).json({error:e.message,code:'CHUNK_FAILED',chunkIndex,startSeconds:start});
+    const message=e?.message||String(e);
+    const retry=message.match(/retry in\s+([0-9.]+)s/i);
+    if(retry||/quota exceeded|rate limit|resource_exhausted/i.test(message)){
+      const retryAfterSeconds=retry?Math.max(5,Math.ceil(Number(retry[1]))):40;
+      return res.status(429).json({
+        error:'Gemini Free Tier 暂时达到速度上限，系统会自动等待后继续。',
+        code:'GEMINI_FREE_RATE_LIMIT',
+        retryAfterSeconds,
+        chunkIndex,
+        startSeconds:start
+      });
+    }
+    return res.status(500).json({error:message,code:'CHUNK_FAILED',chunkIndex,startSeconds:start});
   }finally{
     await fs.rm(dir,{recursive:true,force:true}).catch(()=>{});
   }
